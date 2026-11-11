@@ -34,7 +34,12 @@ let fallbackRewind = 0.1
 /// `.info`: [kind, JSON] describing the watch (see WatchInfo), not the fixed 5 bytes.
 /// `.drag`: a = 1 grab (mouse down), 0 drop (mouse up).
 /// Clicks and drags may add the same UInt16 ms time as `.aim`: when the thumb touched down (or lifted, for a drop).
-enum Kind: UInt8 { case aim = 0, leftClick = 1, rightClick = 2, scroll = 3, center = 4, pause = 5, info = 6, drag = 7 }
+/// `.present`: a = 1 presentation mode on, 0 off. `.slide`: a = 1 next, -1 previous. `.laser`: a = 1 on, 0 off;
+/// while on, aim moves a red dot instead of the cursor.
+enum Kind: UInt8 {
+    case aim = 0, leftClick = 1, rightClick = 2, scroll = 3, center = 4, pause = 5, info = 6, drag = 7
+    case present = 8, slide = 9, laser = 10
+}
 
 /// 1€ filter (Casiez et al. 2012): heavy smoothing when the hand is nearly still (no jitter),
 /// almost none when it moves fast (no lag). The standard choice for pointing devices.
@@ -84,6 +89,8 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
     private var frameTimer: DispatchSourceTimer?
     private var history: [(time: Double, point: CGPoint)] = [] // where the cursor was, last ~1 s
     private var dragging = false
+    private var laserOn = false
+    private let laser = Laser()
 
     init(live: Live) {
         self.live = live
@@ -129,6 +136,8 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
     /// The watch's Bluetooth link closed (app quit, out of range, watch asleep long enough to drop it).
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         drop()
+        laserOn = false
+        DispatchQueue.main.async { [laser] in laser.show(at: nil) }
         watchInfo = nil
         ui { $0.watch = nil } // don't keep showing an old battery level or model
         if phase != .waiting {
@@ -176,6 +185,13 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
             log(paused ? "paused" : "resumed")
             setPhase(paused ? .paused : .live, toast: paused ? .paused : .resumed)
         case .info: break // handled above
+        case .present:
+            log(a != 0 ? "presenting" : "pointing")
+            setPhase(a != 0 ? .presenting : .live)
+        case .slide: key(a > 0 ? 124 : 123) // → / ←: next / previous in Keynote, PowerPoint, Preview, browsers
+        case .laser:
+            laserOn = a != 0
+            if !laserOn { DispatchQueue.main.async { [laser] in laser.show(at: nil) } }
         case .scroll:
             CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(a), wheel2: 0, wheel3: 0)?
                 .post(tap: .cghidEventTap)
@@ -249,6 +265,7 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
         guard let target else { return }
         guard now - lastSample < 0.3 else { // watch idle: leave the trackpad alone
             drop() // never leave the button held down if the watch goes quiet mid-drag
+            if laserOn { DispatchQueue.main.async { [laser] in laser.show(at: nil) } }
             if phase == .live, now - lastSample > 1.5 {
                 log("watch lost")
                 setPhase(.idle, toast: .lost)
@@ -261,7 +278,11 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
         // Every display is reachable, laid out as in System Settings › Displays. Pointing past the outer
         // edge pins the cursor to the nearest display; coming back lines up again.
         let p = Displays.clamp(next)
-        post(dragging ? .leftMouseDragged : .mouseMoved, p)
+        if laserOn {
+            DispatchQueue.main.async { [laser] in laser.show(at: p) }
+        } else {
+            post(dragging ? .leftMouseDragged : .mouseMoved, p)
+        }
         history.append((now, p))
         while let first = history.first, now - first.time > 1 { history.removeFirst() }
         if frames % 16 == 0 { // 15 Hz is plenty for the notch; more just keeps the main thread busy
@@ -306,6 +327,12 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
 
     private func post(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left) {
         CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: p, mouseButton: button)?.post(tap: .cghidEventTap)
+    }
+
+    private func key(_ code: CGKeyCode) {
+        for down in [true, false] {
+            CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)?.post(tap: .cghidEventTap)
+        }
     }
 
     private func click(_ button: CGMouseButton, at time: Double?) {

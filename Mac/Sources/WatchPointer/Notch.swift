@@ -70,6 +70,7 @@ struct NotchView: View {
         case .waiting: Color(white: 0.4)
         case .live: .green
         case .paused, .idle: .orange
+        case .presenting: .red
         }
     }
 

@@ -22,7 +22,12 @@ struct WatchPointerApp: App {
 /// `.info`: [kind, JSON] with the watch's model id, watchOS, battery and name (not the fixed 5 bytes).
 /// `.drag`: a = 1 grab (mouse down), 0 drop (mouse up).
 /// Clicks and drags may add the same UInt16 ms time as `.aim`: when the thumb touched down (or lifted, for a drop).
-enum Kind: UInt8 { case aim = 0, leftClick = 1, rightClick = 2, scroll = 3, center = 4, pause = 5, info = 6, drag = 7 }
+/// `.present`: a = 1 presentation mode on, 0 off. `.slide`: a = 1 next, -1 previous. `.laser`: a = 1 on, 0 off;
+/// while on, aim moves a red dot instead of the cursor.
+enum Kind: UInt8 {
+    case aim = 0, leftClick = 1, rightClick = 2, scroll = 3, center = 4, pause = 5, info = 6, drag = 7
+    case present = 8, slide = 9, laser = 10
+}
 
 /// How long you hold the screen before it grabs. The Mac uses the same number to undo the press's jolt.
 let holdToDrag = 0.35
@@ -37,6 +42,9 @@ struct FoundMac: Identifiable {
 final class Pointer: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     @Published var connected = false
     @Published var paused = false
+    /// Presentation mode: slide buttons, and aim is only sent while the laser is held.
+    @Published var presenting = false
+    @Published var laser = false
     /// Macs nearby you can pair with (only while nothing is paired).
     @Published var found: [FoundMac] = []
     /// The Mac you paired with. The watch only ever connects to this one until you forget it.
@@ -72,6 +80,20 @@ final class Pointer: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func togglePause() {
         paused.toggle()
         send(.pause, paused ? 1 : 0)
+    }
+
+    func togglePresenting() {
+        if paused { togglePause() } // presentation mode has no pause; don't come back to a stuck one
+        laser = false
+        presenting.toggle()
+        send(.present, presenting ? 1 : 0)
+    }
+
+    /// Held: the Mac shows a red dot that follows the watch. Let go: it disappears.
+    func setLaser(_ on: Bool) {
+        guard on != laser else { return }
+        laser = on
+        send(.laser, on ? 1 : 0)
     }
 
     private func recenter() {
@@ -120,7 +142,7 @@ final class Pointer: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
 
             guard connected else { return }
             flushScroll()
-            guard !paused else { return }
+            guard presenting ? laser : !paused else { return }
             sendAim(at: data.timestamp)
         }
     }
@@ -257,6 +279,8 @@ final class Pointer: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         output = nil
         connected = false
         paused = false
+        presenting = false
+        laser = false
         pendingScroll = 0
         infoTimer?.invalidate()
         start()

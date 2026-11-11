@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Mac scroll distance, in pixels, per unit of Crown turn. Higher = faster scrolling.
 private let crownPixels = 100.0
+/// Crown turn per slide in presentation mode. Higher = turn further for each slide.
+private let crownPerSlide = 1.0
 
 /// A remote you use without looking: one big pad, three buttons in fixed places, haptics for feedback.
 struct ContentView: View {
@@ -10,6 +12,7 @@ struct ContentView: View {
     @FocusState private var crownFocused: Bool
     @State private var clicks = 0
     @State private var centers = 0
+    @State private var slideTurn = 0.0 // Crown turn toward the next slide, not used yet
     @State private var confirmUnpair = false
     @State private var unpairTitle = ""
 
@@ -25,6 +28,11 @@ struct ContentView: View {
                                 confirmUnpair = true
                             } label: { Image(systemName: "laptopcomputer") }
                         }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { pointer.togglePresenting() } label: {
+                                Image(systemName: pointer.presenting ? "cursorarrow" : "play.rectangle")
+                            }
+                        }
                     }
                 }
                 .confirmationDialog(unpairTitle, isPresented: $confirmUnpair, titleVisibility: .visible) {
@@ -38,7 +46,19 @@ struct ContentView: View {
 
     private var remote: some View {
         Group {
-            if pointer.connected {
+            if pointer.connected && pointer.presenting {
+                VStack(spacing: 6) {
+                    LaserPad(pointer: pointer)
+                        .frame(maxHeight: .infinity)
+                    HStack(spacing: 6) {
+                        PadButton(symbol: "chevron.left") { clicks += 1; pointer.send(.slide, -1) }
+                        PadButton(symbol: "chevron.right") { clicks += 1; pointer.send(.slide, 1) }
+                    }
+                    .frame(height: 52)
+                }
+                .padding(.horizontal, 4)
+                .transition(.opacity)
+            } else if pointer.connected {
                 VStack(spacing: 6) {
                     ClickPad(paused: pointer.paused, clicks: $clicks, pointer: pointer)
                         .frame(maxHeight: .infinity)
@@ -71,11 +91,21 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.black)
         .animation(.smooth(duration: 0.3), value: pointer.connected)
+        .animation(.smooth(duration: 0.3), value: pointer.presenting)
         // The Crown only reaches the focused view, so keep focus here rather than on a button.
         .focusable()
         .focused($crownFocused)
         .digitalCrownRotation($crown)
-        .onChange(of: crown) { old, new in pointer.scroll(by: (new - old) * crownPixels) }
+        .onChange(of: crown) { old, new in
+            guard pointer.presenting else { return pointer.scroll(by: (new - old) * crownPixels) }
+            slideTurn += new - old
+            if abs(slideTurn) >= crownPerSlide {
+                clicks += 1
+                pointer.send(.slide, slideTurn > 0 ? 1 : -1)
+                slideTurn = 0
+            }
+        }
+        .onChange(of: pointer.presenting) { slideTurn = 0 }
         .onAppear { crownFocused = true }
         .onChange(of: pointer.connected) { crownFocused = true }
         .sensoryFeedback(.impact(weight: .light), trigger: clicks)
@@ -213,6 +243,29 @@ private struct ClickPad: View {
                     }
             )
             .sensoryFeedback(trigger: dragging) { _, now in .impact(weight: now ? .heavy : .light) }
+    }
+}
+
+/// Hold = laser on: a red dot on the Mac follows the watch. Let go = it's gone.
+private struct LaserPad: View {
+    @ObservedObject var pointer: Pointer
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(pointer.laser ? Color.red : Color(white: 0.16))
+            .overlay {
+                Image(systemName: "laser.burst")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(pointer.laser ? .white : .red)
+            }
+            .animation(.smooth(duration: 0.15), value: pointer.laser)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in pointer.setLaser(true) }
+                    .onEnded { _ in pointer.setLaser(false) }
+            )
+            .sensoryFeedback(trigger: pointer.laser) { _, now in .impact(weight: now ? .heavy : .light) }
     }
 }
 

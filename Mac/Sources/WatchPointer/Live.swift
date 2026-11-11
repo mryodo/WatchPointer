@@ -2,7 +2,7 @@ import SwiftUI
 
 /// What the notch shows. Written by the Receiver, read by the notch views.
 final class Live: ObservableObject {
-    enum Phase { case waiting, live, paused, idle }
+    enum Phase { case waiting, live, paused, idle, presenting }
     enum Toast { case connected, lost, centered, paused, resumed }
 
     @Published var phase = Phase.waiting

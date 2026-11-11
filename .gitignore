@@ -8,3 +8,5 @@ Mac/.swiftpm/
 xcuserdata/
 DerivedData/
 *.xcuserstate
+build/
+project.xcworkspace/
